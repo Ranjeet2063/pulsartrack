@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { getFeeStats } from "../services/horizon";
 import { stellarConfig, CONTRACT_IDS } from "../config/stellar";
-import { requireAuth, authRouter } from "../middleware/auth";
+import { requireAuth, authRouter, rateLimitAccount } from "../middleware/auth";
 import campaignRoutes from "../routes/campaigns";
 import publisherRoutes from "../routes/publishers";
 import auctionRoutes from "../routes/auctions";
@@ -61,7 +61,7 @@ router.get("/network", async (_req: Request, res: Response) => {
 });
 
 // List deployed contract IDs (auth required)
-router.get("/contracts", requireAuth, (_req: Request, res: Response) => {
+router.get("/contracts", requireAuth, rateLimitAccount(), (_req: Request, res: Response) => {
   res.json({ contracts: CONTRACT_IDS });
 });
 
