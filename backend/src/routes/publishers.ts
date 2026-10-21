@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import * as publishersRepo from "../db/repositories/publishers";
 import { callReadOnly, toAddressScVal } from "../services/soroban-client";
 import { CONTRACT_IDS } from "../config/stellar";
-import { requireAuth, rateLimitWrite, getAuthedAddress } from "../middleware/auth";
+import { requireAuth, rateLimitAccount, rateLimitWrite, getAuthedAddress } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 
 const router = Router();
@@ -69,6 +69,7 @@ router.get(
 router.post(
   "/register",
   requireAuth,
+  rateLimitAccount(),
   rateLimitWrite(),
   validate({
     body: {

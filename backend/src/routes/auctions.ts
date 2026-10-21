@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import pool from "../config/database";
 import { callReadOnly } from "../services/soroban-client";
 import { CONTRACT_IDS } from "../config/stellar";
-import { requireAuth, rateLimitWrite } from "../middleware/auth";
+import { requireAuth, rateLimitAccount, rateLimitWrite } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 
 const router = Router();
@@ -84,6 +84,7 @@ router.get(
 router.post(
   "/:auctionId/bid",
   requireAuth,
+  rateLimitAccount(),
   rateLimitWrite(),
   validate({
     params: {

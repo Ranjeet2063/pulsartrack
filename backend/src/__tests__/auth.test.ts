@@ -145,6 +145,113 @@ describe('requireAuth middleware', () => {
     expect(res.status).toBe(200);
     expect(res.body.contracts).toBeDefined();
   });
+
+  it('should enforce per-account rate limiting and return 429 when points are exhausted', async () => {
+    const { accountLimiter } = await import('../middleware/auth');
+    const address = 'GA4LYCAMDLLOJPGXHQCHHPXBISH5RAWSS7ZTCSQAPKASBXG4NTB5MJ6N';
+    const token = createJwt({ sub: address });
+
+    const consumeSpy = vi.spyOn(accountLimiter, 'consume').mockRejectedValueOnce(new Error('Rate limit exceeded'));
+
+    try {
+      const res = await request(app)
+        .get('/api/contracts')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(429);
+      expect(res.body).toEqual({ error: 'Account rate limit exceeded' });
+      expect(consumeSpy).toHaveBeenCalledWith(address);
+    } finally {
+      consumeSpy.mockRestore();
+    }
+  });
+
+  it('should return 429 when authenticated requests exceed the 50 req/min per-account limit', async () => {
+    const { accountLimiter } = await import('../middleware/auth');
+    const address = 'GA4LYCAMDLLOJPGXHQCHHPXBISH5RAWSS7ZTCSQAPKASBXG4NTB5MJ6N';
+    const token = createJwt({ sub: address });
+
+    let callCount = 0;
+    const consumeSpy = vi.spyOn(accountLimiter, 'consume').mockImplementation(async () => {
+      callCount++;
+      if (callCount > 50) {
+        throw new Error('Rate limit exceeded');
+      }
+      return {} as any;
+    });
+
+    try {
+      // Make 50 allowed requests
+      for (let i = 0; i < 50; i++) {
+        const okRes = await request(app)
+          .get('/api/contracts')
+          .set('Authorization', `Bearer ${token}`);
+        expect(okRes.status).toBe(200);
+      }
+
+      // 51st request exceeds the per-account rate limit
+      const exceededRes = await request(app)
+        .get('/api/contracts')
+        .set('Authorization', `Bearer ${token}`);
+      expect(exceededRes.status).toBe(429);
+      expect(exceededRes.body).toEqual({ error: 'Account rate limit exceeded' });
+      expect(consumeSpy).toHaveBeenCalledWith(address);
+    } finally {
+      consumeSpy.mockRestore();
+    }
+  });
+});
+
+describe('rateLimitAccount middleware', () => {
+  it('should call next() if req.stellarAddress is not set', async () => {
+    const { rateLimitAccount } = await import('../middleware/auth');
+    const mockReq = {} as any;
+    const mockRes = { status: vi.fn().mockReturnThis(), json: vi.fn() } as any;
+    const next = vi.fn();
+
+    const middleware = rateLimitAccount();
+    await middleware(mockReq, mockRes, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+
+  it('should consume account rate limit points when req.stellarAddress is present', async () => {
+    const { rateLimitAccount, accountLimiter } = await import('../middleware/auth');
+    const consumeSpy = vi.spyOn(accountLimiter, 'consume').mockResolvedValueOnce({} as any);
+    try {
+      const mockReq = { stellarAddress: 'GA4LYCAMDLLOJPGXHQCHHPXBISH5RAWSS7ZTCSQAPKASBXG4NTB5MJ6N' } as any;
+      const mockRes = { status: vi.fn().mockReturnThis(), json: vi.fn() } as any;
+      const next = vi.fn();
+
+      const middleware = rateLimitAccount();
+      await middleware(mockReq, mockRes, next);
+
+      expect(consumeSpy).toHaveBeenCalledWith('GA4LYCAMDLLOJPGXHQCHHPXBISH5RAWSS7ZTCSQAPKASBXG4NTB5MJ6N');
+      expect(next).toHaveBeenCalledTimes(1);
+    } finally {
+      consumeSpy.mockRestore();
+    }
+  });
+
+  it('should respond with 429 when accountLimiter rejects', async () => {
+    const { rateLimitAccount, accountLimiter } = await import('../middleware/auth');
+    const consumeSpy = vi.spyOn(accountLimiter, 'consume').mockRejectedValueOnce(new Error('Rate limit exceeded'));
+    try {
+      const mockReq = { stellarAddress: 'GA4LYCAMDLLOJPGXHQCHHPXBISH5RAWSS7ZTCSQAPKASBXG4NTB5MJ6N' } as any;
+      const mockRes = { status: vi.fn().mockReturnThis(), json: vi.fn() } as any;
+      const next = vi.fn();
+
+      const middleware = rateLimitAccount();
+      await middleware(mockReq, mockRes, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(mockRes.status).toHaveBeenCalledWith(429);
+      expect(mockRes.json).toHaveBeenCalledWith({ error: 'Account rate limit exceeded' });
+    } finally {
+      consumeSpy.mockRestore();
+    }
+  });
 });
 
 describe('getAuthedAddress helper', () => {
@@ -201,15 +308,15 @@ describe('Live auth routes (/api/auth)', () => {
     redisStore = new Map();
     const redisModule = await import('../config/redis');
     const redisClient = redisModule.default;
-    vi.spyOn(redisClient, 'set').mockImplementation(async (key: string, val: string) => {
-      redisStore.set(key, val);
+    vi.spyOn(redisClient, 'set').mockImplementation(async (key: any, val: any) => {
+      redisStore.set(String(key), String(val));
       return 'OK' as any;
     });
-    vi.spyOn(redisClient, 'get').mockImplementation(async (key: string) => {
-      return (redisStore.get(key) ?? null) as any;
+    vi.spyOn(redisClient, 'get').mockImplementation(async (key: any) => {
+      return (redisStore.get(String(key)) ?? null) as any;
     });
-    vi.spyOn(redisClient, 'del').mockImplementation(async (key: string) => {
-      redisStore.delete(key);
+    vi.spyOn(redisClient, 'del').mockImplementation(async (key: any) => {
+      redisStore.delete(String(key));
       return 1 as any;
     });
   });
