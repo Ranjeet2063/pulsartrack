@@ -205,3 +205,85 @@ fn test_has_consent_third_party_sharing() {
     assert!(c.has_consent(&user, &s(&env, "third_party_sharing")));
     assert!(!c.has_consent(&user, &s(&env, "analytics")));
 }
+
+#[test]
+fn test_data_request_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (c, admin) = setup(&env);
+    let requester = Address::generate(&env);
+
+    assert_eq!(c.get_request_counter(), 0);
+
+    let req_id = c.request_data_access(
+        &requester,
+        &s(&env, "demographics"),
+        &s(&env, "ad-attribution"),
+    );
+    assert_eq!(req_id, 1);
+    assert_eq!(c.get_request_counter(), 1);
+
+    let req = c.get_data_request(&req_id).unwrap();
+    assert_eq!(req.request_id, 1);
+    assert_eq!(req.requester, requester);
+    assert_eq!(req.data_type, s(&env, "demographics"));
+    assert_eq!(req.purpose, s(&env, "ad-attribution"));
+    assert!(!req.approved);
+
+    // Approve
+    c.approve_data_request(&admin, &req_id);
+    let req_approved = c.get_data_request(&req_id).unwrap();
+    assert!(req_approved.approved);
+
+    // Reject
+    c.reject_data_request(&admin, &req_id);
+    let req_rejected = c.get_data_request(&req_id).unwrap();
+    assert!(!req_rejected.approved);
+}
+
+#[test]
+fn test_data_request_counter_increments() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (c, _) = setup(&env);
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+
+    let id1 = c.request_data_access(&r1, &s(&env, "type1"), &s(&env, "p1"));
+    let id2 = c.request_data_access(&r2, &s(&env, "type2"), &s(&env, "p2"));
+
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+    assert_eq!(c.get_request_counter(), 2);
+}
+
+#[test]
+fn test_data_request_nonexistent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (c, _) = setup(&env);
+    assert!(c.get_data_request(&999u64).is_none());
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_approve_data_request_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (c, _) = setup(&env);
+    let requester = Address::generate(&env);
+    let rogue = Address::generate(&env);
+
+    let req_id = c.request_data_access(&requester, &s(&env, "type"), &s(&env, "purpose"));
+    c.approve_data_request(&rogue, &req_id);
+}
+
+#[test]
+#[should_panic(expected = "request not found")]
+fn test_approve_data_request_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (c, admin) = setup(&env);
+    c.approve_data_request(&admin, &42u64);
+}
+
