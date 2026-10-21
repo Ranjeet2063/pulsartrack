@@ -346,6 +346,153 @@ impl PrivacyLayerContract {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().persistent().get(&DataKey::Proof(proof_id))
     }
+
+    pub fn request_data_access(
+        env: Env,
+        requester: Address,
+        data_type: String,
+        purpose: String,
+    ) -> u64 {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        requester.require_auth();
+
+        let counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RequestCounter)
+            .unwrap_or(0);
+        let request_id = counter
+            .checked_add(1)
+            .expect("request counter overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RequestCounter, &request_id);
+
+        let request = DataRequest {
+            request_id,
+            requester: requester.clone(),
+            data_type,
+            purpose,
+            approved: false,
+            requested_at: env.ledger().timestamp(),
+        };
+
+        let key = DataKey::DataRequest(request_id);
+        env.storage().persistent().set(&key, &request);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.events().publish(
+            (symbol_short!("data_req"), symbol_short!("created")),
+            (request_id, requester),
+        );
+
+        request_id
+    }
+
+    pub fn approve_data_request(env: Env, admin: Address, request_id: u64) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        admin.require_auth();
+
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            panic!("unauthorized");
+        }
+
+        let key = DataKey::DataRequest(request_id);
+        let mut req: DataRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("request not found");
+
+        req.approved = true;
+
+        env.storage().persistent().set(&key, &req);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.events().publish(
+            (symbol_short!("data_req"), symbol_short!("approved")),
+            request_id,
+        );
+    }
+
+    pub fn reject_data_request(env: Env, admin: Address, request_id: u64) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        admin.require_auth();
+
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            panic!("unauthorized");
+        }
+
+        let key = DataKey::DataRequest(request_id);
+        let mut req: DataRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("request not found");
+
+        req.approved = false;
+
+        env.storage().persistent().set(&key, &req);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.events().publish(
+            (symbol_short!("data_req"), symbol_short!("rejected")),
+            request_id,
+        );
+    }
+
+    pub fn get_data_request(env: Env, request_id: u64) -> Option<DataRequest> {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        let key = DataKey::DataRequest(request_id);
+        if let Some(req) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, DataRequest>(&key)
+        {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+            Some(req)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_request_counter(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .get(&DataKey::RequestCounter)
+            .unwrap_or(0)
+    }
 }
 
 mod test;

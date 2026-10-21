@@ -184,3 +184,97 @@ describe('getAuthedAddress helper', () => {
     expect(mockRes.json).toHaveBeenCalledWith({ error: 'Authentication required' });
   });
 });
+
+describe('Live auth routes (/api/auth)', () => {
+  let app: any;
+  let request: any;
+  let redisStore: Map<string, string>;
+
+  beforeAll(async () => {
+    const appModule = await import('../app');
+    app = appModule.default;
+    request = (await import('supertest')).default;
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    redisStore = new Map();
+    const redisModule = await import('../config/redis');
+    const redisClient = redisModule.default;
+    vi.spyOn(redisClient, 'set').mockImplementation(async (key: string, val: string) => {
+      redisStore.set(key, val);
+      return 'OK' as any;
+    });
+    vi.spyOn(redisClient, 'get').mockImplementation(async (key: string) => {
+      return (redisStore.get(key) ?? null) as any;
+    });
+    vi.spyOn(redisClient, 'del').mockImplementation(async (key: string) => {
+      redisStore.delete(key);
+      return 1 as any;
+    });
+  });
+
+  it('should complete full authentication flow through the live app and return usable JWT', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk');
+    const keypair = Keypair.random();
+    const address = keypair.publicKey();
+
+    // 1. Hit GET /api/auth/challenge through live app
+    const challengeRes = await request(app)
+      .get(`/api/auth/challenge?address=${address}`);
+    expect(challengeRes.status).toBe(200);
+    expect(challengeRes.body).toHaveProperty('nonce');
+    const { nonce } = challengeRes.body;
+    expect(typeof nonce).toBe('string');
+    expect(nonce.length).toBe(64);
+
+    // 2. Sign nonce using Stellar keypair
+    const signatureBytes = keypair.sign(Buffer.from(nonce, 'hex'));
+    const signature = Buffer.from(signatureBytes).toString('base64');
+
+    // 3. Hit POST /api/auth/verify through live app
+    const verifyRes = await request(app)
+      .post('/api/auth/verify')
+      .send({ address, signature });
+    expect(verifyRes.status).toBe(200);
+    expect(verifyRes.body).toHaveProperty('token');
+    expect(verifyRes.body).toHaveProperty('expiresIn');
+    const { token } = verifyRes.body;
+    expect(typeof token).toBe('string');
+
+    // 4. Confirm the returned token is usable against a protected endpoint
+    const protectedRes = await request(app)
+      .get('/api/contracts')
+      .set('Authorization', `Bearer ${token}`);
+    expect(protectedRes.status).toBe(200);
+    expect(protectedRes.body).toHaveProperty('contracts');
+  });
+
+  it('should return 400 when requesting challenge with invalid Stellar address', async () => {
+    const res = await request(app).get('/api/auth/challenge?address=invalid_address');
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error', 'Invalid Stellar address');
+  });
+
+  it('should return 400 when address is missing in challenge request', async () => {
+    const res = await request(app).get('/api/auth/challenge');
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error', 'Missing address parameter');
+  });
+
+  it('should return 401 when verifying with an invalid signature', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk');
+    const keypair = Keypair.random();
+    const address = keypair.publicKey();
+
+    // Store a challenge in redis
+    redisStore.set(`nonce:${address}`, 'abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234');
+
+    const invalidSignature = Buffer.from('invalid-sig').toString('base64');
+    const res = await request(app)
+      .post('/api/auth/verify')
+      .send({ address, signature: invalidSignature });
+    expect(res.status).toBe(401);
+  });
+});
+
